@@ -8,7 +8,7 @@ This repository is based on the pynq project and explores the use case of pynq i
 
 - [x] Pgm image to C array / C array to pgm image
 
-- [ ] Get registers mapping for Pynq z2
+- [x] Get registers mapping for Pynq z2
 
-- [ ] Write a hardware image processing in C (DMA)
+- [x] Write a hardware image processing in C (DMA)
  
