@@ -179,7 +179,7 @@ void test3()
     free_mmio(recv_buff, DATA_SIZE);
     free_mmio(send_buff, DATA_SIZE);
     free_mmio(dma_mmio, REGISTER_SIZE);
-    free_mmio(dma_mmio, REGISTER_SIZE);
+    free_mmio(ip_mmio, REGISTER_SIZE);
 }
 
 int main(int argv, char** argc){
