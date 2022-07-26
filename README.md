@@ -5,4 +5,4 @@ This repository is based on the pynq project and explores the use case of pynq i
 ---
 
 ## AXI DMA
-## BITSTEAM LOADING
+## memory allocation
