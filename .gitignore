@@ -1,6 +1,8 @@
 .vscode
 */bin/*
 
+*.dat
+
 # Prerequisites
 *.d
 

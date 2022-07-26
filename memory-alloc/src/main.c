@@ -8,7 +8,7 @@
 #include "time.h"
 
 #define THRES       127
-#define DATA_SIZE   10
+#define DATA_SIZE   (10*sizeof(unsigned int))
 
 void fill_random(unsigned int* buff, size_t len)
 {
@@ -20,15 +20,16 @@ void fill_random(unsigned int* buff, size_t len)
 
 int compare_arrays(unsigned int* ibuff1, unsigned int* ibuff2, size_t data_size)
 {
-    unsigned char *buff1 =  ibuff1;
-    unsigned char *buff2 =  ibuff2;
+    unsigned char *buff1 =  (unsigned char*) ibuff1;
+    unsigned char *buff2 =  (unsigned char*) ibuff2;
 
     for(size_t i = 0; i < data_size; i++ )
-    {
+    { 
         if( buff1[i] != buff2[i]){
             printf("buff[%u] : %02x != %02x \n", i,  buff1[i], buff2[i]);
             return 0;
         }
+        printf("buff[%u] : %02x == %02x \n", i,  buff1[i], buff2[i]);
     }
     
     return 1;
@@ -46,7 +47,7 @@ void memdump(void* virtual_address, int byte_count)
     printf("\n");
 }
 
-// #define DIRTY_MMAP
+#define DIRTY_MMAP
 // #define MALLOC
 // #define CMA_ALLOC
 
@@ -54,25 +55,33 @@ void memdump(void* virtual_address, int byte_count)
 #define MYALLOC mem_alloc1
 #define MYALLOC_STR "get_mmio"
 #define MYFREE(b, s) free_mmio(b, s)
+#define MY_DMA_RECV_ADDR DMA_RECV_ADDR
+#define MY_DMA_SEND_ADDR DMA_SEND_ADDR
 #elif defined MALLOC
 #define MYALLOC mem_alloc2
 #define MYALLOC_STR "malloc"
 #define MYFREE(b, s) free(b)
+#define MY_DMA_RECV_ADDR vtop(send_buff)
+#define MY_DMA_SEND_ADDR vtop(recv_buff)
 #elif defined CMA_ALLOC
 #define MYALLOC mem_alloc3
 #define MYALLOC_STR "cma_alloc"
 #define MYFREE(b, s) cma_free(b)
+#define MY_DMA_RECV_ADDR cma_get_phy_addr(send_buff)
+#define MY_DMA_SEND_ADDR cma_get_phy_addr(recv_buff)
 #else
 #define MYALLOC mem_alloc1
 #define MYALLOC_STR "get_mmio"
 #define MYFREE(b, s) free_mmio(b, s)
+#define MY_DMA_RECV_ADDR DMA_RECV_ADDR
+#define MY_DMA_SEND_ADDR DMA_SEND_ADDR
 #endif
 
 #ifdef CMA_ALLOC
-#define CACHE   cma_invalidate_cache(send_buff, cma_get_phy_addr(recv_buff), DATA_SIZE*sizeof(unsigned int));\
-                cma_flush_cache(send_buff, cma_get_phy_addr(recv_buff), DATA_SIZE*sizeof(unsigned int));\
-                cma_invalidate_cache(recv_buff, cma_get_phy_addr(recv_buff), DATA_SIZE*sizeof(unsigned int));\
-                cma_flush_cache(recv_buff, cma_get_phy_addr(recv_buff), DATA_SIZE*sizeof(unsigned int));
+#define CACHE   cma_invalidate_cache(send_buff, cma_get_phy_addr(recv_buff), DATA_SIZE);\
+                cma_flush_cache(send_buff, cma_get_phy_addr(recv_buff), DATA_SIZE);\
+                cma_invalidate_cache(recv_buff, cma_get_phy_addr(recv_buff), DATA_SIZE);\
+                cma_flush_cache(recv_buff, cma_get_phy_addr(recv_buff), DATA_SIZE);
 #else
 #define CACHE
 #endif
@@ -89,7 +98,7 @@ int main(int argc, char const *argv[])
     unsigned int* send_buff;
     unsigned int* recv_buff;
 
-    if(!MYALLOC(&send_buff, &recv_buff, DATA_SIZE*sizeof(unsigned int))) {
+    if(!MYALLOC(&send_buff, &recv_buff, DATA_SIZE)) {
         printf("%s(...) failed !\n", MYALLOC_STR);
         return 1;
     }
@@ -100,7 +109,7 @@ int main(int argc, char const *argv[])
 
     ip_mmio[0x0] = 0x81;
     
-    memset(recv_buff, 0, DATA_SIZE*sizeof(unsigned int));
+    memset(recv_buff, 0, DATA_SIZE);
     fill_random(send_buff, DATA_SIZE);
 
 CACHE
@@ -112,8 +121,8 @@ CACHE
     halt_DMA(dma_mmio);
 
     printf("attaching buffers...\n");
-    attach_recv_buff(dma_mmio, DMA_RECV_ADDR);
-    attach_send_buff(dma_mmio, DMA_SEND_ADDR);
+    attach_recv_buff(dma_mmio, MY_DMA_RECV_ADDR);
+    attach_send_buff(dma_mmio, MY_DMA_SEND_ADDR);
 
     printf("starting transfer...\n");
     start_transfer(dma_mmio);
@@ -131,10 +140,13 @@ CACHE
     }
 CACHE
 
+    printf("Source memory block:      \n"); memdump(send_buff, DATA_SIZE);
+    printf("Destination memory block: \n"); memdump(recv_buff, DATA_SIZE);    
+
     int check = compare_arrays(send_buff, recv_buff, DATA_SIZE);
 
-    printf("Source memory block:      \n"); memdump(send_buff, DATA_SIZE*sizeof(unsigned int));
-    printf("Destination memory block: \n"); memdump(recv_buff, DATA_SIZE*sizeof(unsigned int));    
+    printf("Source memory block:      \n"); memdump(send_buff, DATA_SIZE);
+    printf("Destination memory block: \n"); memdump(recv_buff, DATA_SIZE);    
     
     if(check)
     {
@@ -143,8 +155,8 @@ CACHE
         printf("Software and hardware are NOT equals !\n");
     }
 
-    MYFREE(recv_buff, DATA_SIZE*sizeof(unsigned int));
-    MYFREE(send_buff, DATA_SIZE*sizeof(unsigned int));
+    MYFREE(recv_buff, DATA_SIZE);
+    MYFREE(send_buff, DATA_SIZE);
     free_mmio(dma_mmio, REGISTER_SIZE);
     free_mmio(ip_mmio, REGISTER_SIZE);
 
