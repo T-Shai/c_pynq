@@ -3,4 +3,4 @@
 module="axi_dma_dev"
 
 rm /dev/${module}
-/sbin/rmmod $module
+/sbin/rmmod  $module
