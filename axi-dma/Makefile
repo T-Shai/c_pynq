@@ -10,11 +10,11 @@ bin/image.o: src/image.h src/image.c
 bin/process.o: src/process.h src/process.c
 	gcc -g -c src/process.c -o bin/process.o
 
-bin/pynq_utils.o: src/pynq_utils.h src/pynq_utils.c
-	gcc -g -c src/pynq_utils.c -o $@
+bin/pynq_utils.o: ../common/pynq_utils.h ../common/pynq_utils.c
+	gcc -g -c ../common/pynq_utils.c -o $@
 
 bin/main.o: src/main.c 
-	gcc -g -c src/main.c -o bin/main.o
+	gcc -g -c src/main.c -o bin/main.o -I../common
 
 clean: Makefile
 	rm -r bin

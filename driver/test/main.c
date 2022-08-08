@@ -14,9 +14,9 @@ int main(int argc, char const *argv[])
         return 1;
     }
 
-    char tmp[100];
-    read(fd, tmp, 100);
-    write(fd, tmp, strlen(tmp));
+    char tmp[1024];
+    read(fd, tmp, 1024);
+    // write(fd, tmp, strlen(tmp));
     printf("%s\n", tmp);
     
     close(fd);

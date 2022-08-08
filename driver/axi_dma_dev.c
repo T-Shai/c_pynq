@@ -4,6 +4,8 @@
 #include <linux/fs.h>
 #include <linux/uaccess.h>
 #include <linux/ioport.h>
+#include <linux/slab.h>
+#include <asm/io.h>
 
 #include "pynq_utils.h"
 
@@ -24,33 +26,33 @@ static struct file_operations fops = {
    .release = dev_release,
 };
 
+
 static int major;
-static struct resource* res_dma_base;
-static unsigned int* dma_base;
+
+volatile dma_registers_t *dma_regs;
 
 static int __init axi_dma_init(void) {
     major = register_chrdev(0, KBUILD_MODNAME, &fops);
-
-    if (major < 0) {
-        pr_alert("module loading failed register_chrdev returned %d", major);
+    if(major < 0) {
+        pr_err("Failed to register character device\n");
         return major;
     }
 
-    res_dma_base = request_mem_region(DMA_BASE, REGISTER_SIZE, KBUILD_MODNAME);
-    if( res_dma_base == NULL) {
-        pr_alert("request_mem_region failed ! [%x : %x] region is busy", DMA_BASE, DMA_BASE+REGISTER_SIZE);
-        return -EAGAIN; /* Resource temporarily unavailable -EBUSY 	Device or resource busy */
+    dma_regs = (dma_registers_t*)ioremap_nocache(DMA_BASE);
+    if(!dma_regs) {
+        pr_err("Failed to map DMA registers\n");
+        return -ENOMEM;
     }
-    pr_info("module loaded major number %d\n", major);
+
+
+    // pr_info("DMA registers mapped to %p\n", dma_regs);
+    // pr_info("%#x\n", readl(dma_regs));
+    // pr_info("module loaded major number %d\n", major);
     return 0;
 }
 
 static void __exit axi_dma_exit(void) {
     unregister_chrdev(major, KBUILD_MODNAME);
-
-    release_resource(res_dma_base);
-    kfree(res_dma_base); /* see _check_region() implementation */ 	
-
     pr_info("module has been unloaded\n");
 }
 
@@ -75,14 +77,10 @@ static int dev_release(struct inode *inodep, struct file *filep) {
 
 static ssize_t dev_read(struct file *filep, char *buffer, size_t len, loff_t *offset) {
     pr_info("device read\n");
-    char *message = "pynq axi dma";
-    ssize_t m_len = strlen(message)+1;
-    ssize_t bytes = len < (m_len-(*offset)) ? len : (m_len-(*offset));
-    if(copy_to_user(buffer, message, m_len)){
-        return -EFAULT;
-    }
-    (*offset) += bytes;
-    return bytes;
+    // return in user buffer the dma status register
+    uint32_t dma_status;
+    dma_status = dma_regs->MM2S_DMASR
+    return strlen(dma_status_str);
 }
 
 module_init(axi_dma_init);

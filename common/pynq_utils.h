@@ -1,8 +1,9 @@
 #ifndef PYNQ_UTILS_H
 #define PYNQ_UTILS_H
 
-#include <linux/types.h>
-#include <linux/string.h>
+#include <sys/types.h>
+#include "stdint.h"
+#include "string.h"
 
 // set base's nth bit to 0
 #define SET_TO_ZERO(base, n_bit) (base &= ~(1 << n_bit))

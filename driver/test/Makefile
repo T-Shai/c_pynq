@@ -1,3 +1,7 @@
+# C FLAGS DEBUG
+CFLAGS += -g 
+
+
 all: main
 	./main
 

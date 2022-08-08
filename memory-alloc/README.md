@@ -1,3 +1,1 @@
-# c_pynq
-
-## memory allocation
+# BITSTREAM LOADING
