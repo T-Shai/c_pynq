@@ -11,53 +11,6 @@
 #include <unistd.h>
 #include <errno.h>
 
-/*
-
-bitsteam  format :
-
-Field 1
-2 bytes          length            (big endian)
-9 bytes          some sort of header
-
-Field 2
-2 bytes          length 
-1 byte           key 0x61                (The letter "a")
-
-Field 3
-2 bytes          length            (value depends on file name length)
-10 bytes         string design name "xform.ncd" (including a trailing 0x00)
-
-Field 4
-1 byte           key                 (The letter "b")
-2 bytes          length            (value depends on part name length)
-12 bytes         string part name "v1000efg860" (including a trailing 0x00)
-
-Field 4
-1 byte           key                 (The letter "c")
-2 bytes          length 
-11 bytes         string date   (including a trailing 0x00)
-
-Field 5
-1 byte           key                 (The letter "d")
-2 bytes          length 
-9 bytes          string time     (including a trailing 0x00)
-
-Field 6
-1 byte           key                  (The letter "e")
-4 bytes          length        (value depends on device type,
-                                           and maybe design details)
-rest of  bytes    raw bit stream starting with 0xffffffff aa995566 sync
-
-*/
-
-typedef struct {
-    char* design_name;
-    char* part_name;
-    char* date;
-    char* time;
-    uint32_t bitstream_length;
-} bitstream_header_t ;
-
 void print_header(bitstream_header_t* header)
 {
     printf("Design name: %s\n", header->design_name);
@@ -282,7 +235,7 @@ Perform Readback operation by reading the image debug attribute
 cat /sys/kernel/debug/fpga/fpga0/image
 
 */
-int load_bitstream(const char * bitsteam_name, int partial)
+int c_load_bitstream(const char * bitsteam_name, int partial, bitstream_header_t** header)
 {
     const char* fpga_flags = "/sys/class/fpga_manager/fpga0/flags";
     const char* fpga_firmware = "/sys/class/fpga_manager/fpga0/firmware";
@@ -293,7 +246,6 @@ int load_bitstream(const char * bitsteam_name, int partial)
         return -1;
     } else {
         // full bitstream
-        printf("Full bitstream\n");
         FILE* fp = fopen(fpga_flags, "w");
         if(fp) {
             fprintf(fp, "0");
@@ -306,14 +258,15 @@ int load_bitstream(const char * bitsteam_name, int partial)
 
     const char* lib_firmware = "/lib/firmware";
     // extracting the header and the binary data from the bitstream file
-    bitstream_header_t* header = (bitstream_header_t*)malloc(sizeof(bitstream_header_t));
+    // bitstream_header_t* header = *pheader;
+    *header = (bitstream_header_t*)malloc(sizeof(bitstream_header_t));
     FILE* fp = fopen(bitsteam_name, "r");
     if(!fp) {
         printf("Failed to open %s\n", bitsteam_name);
+        free_header(*header);
         return 0;
     }
-    parse_bitstream(fp, header);
-    print_header(header);
+    parse_bitstream(fp, *header);
     // get bitfile name from full path
     char* bitfile_name = strrchr(bitsteam_name, '/');
     if(!bitfile_name) {
@@ -340,6 +293,9 @@ int load_bitstream(const char * bitsteam_name, int partial)
         printf("need to create .bin and move it to %s\n", lib_firmware);
         printf("right now you can launch the python Overlay to do this the first time\n");
         // copy_bitstream(bitsteam_name, "test.bin", header);
+        free_header(*header);
+        free(bin_name);
+        free(bin_path);
         return 0;
     }
 
@@ -350,9 +306,46 @@ int load_bitstream(const char * bitsteam_name, int partial)
         fclose(fp_firmware);
     } else {
         printf("Failed to open %s\n", fpga_firmware);
+        free(bin_name);
+        free(bin_path);
+        free_header(*header);
         return 0;
     }
-    free_header(header);
+    // frees 
+    free(bin_path);
+    free(bin_name);
     fclose(fp);
     return 1;
+}
+
+/*
+    parsing a .hwh file which is a xml file
+    this function will get the base address of the dma base address
+*/
+uint64_t get_dma_base(const char *hwh_filename)
+{
+    FILE* fp = fopen(hwh_filename, "r");
+    if(!fp) {
+        printf("Failed to open %s\n", hwh_filename);
+        return 0;
+    }
+
+    const char* dma_name = "/axi_dma_0";
+    const char* dma_base_addr = "<PARAMETER NAME=\"C_BASEADDR\" VALUE=\"";
+
+    char line[1024*4];
+    char in_dma = 0;
+    while(fgets(line, sizeof(line), fp)) {
+        if(strstr(line, dma_name)) {
+            in_dma = 1;
+        }
+        if(in_dma && strstr(line, dma_base_addr)) {
+            char* base_addr = strstr(line, dma_base_addr) + strlen(dma_base_addr);
+            char* end_addr = strstr(base_addr, "\"");
+            *end_addr = '\0';
+            return strtoull(base_addr, NULL, 16);
+        }
+    }
+    fclose(fp);
+    return -1;
 }
