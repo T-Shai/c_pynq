@@ -1,9 +1,11 @@
 # C FLAGS DEBUG
-CFLAGS += -g 
+CFLAGS += -g -I../../common
 
 
 all: main
-	./main
+	./main 
+
+
 
 clean:
 	rm main
