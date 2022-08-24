@@ -8,7 +8,9 @@
 #include <asm/io.h>
 #include <linux/slab.h>
 #include <linux/types.h>
+
 #include <linux/ioctl.h>
+#include "axi_dma_ioctl.h"
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("T-Sai");
@@ -117,14 +119,6 @@ typedef enum {
     // rest are ignored in direct register mode. used in scather gather mode
 } DMA_SR;
 
-/* ioctl */
-#define AXIDMA_IOC_MAGIC 'a'
-#define AXIDMA_IOC_SET_BASE_ADDR _IO(AXIDMA_IOC_MAGIC, 0)
-#define AXIDMA_IOC_SET_SEND_CHAN_SIZE _IO(AXIDMA_IOC_MAGIC, 1)
-#define AXIDMA_IOC_SET_RECV_CHAN_SIZE _IO(AXIDMA_IOC_MAGIC, 2)
-
-
-
 /*
 
     dma device
@@ -139,7 +133,10 @@ typedef struct
     void __iomem *virtual_addr;
 
     /* channels */
+    uint64_t send_chan_addr;
     uint64_t send_chan_size;
+
+    uint64_t rcv_chan_addr;
     uint64_t rcv_chan_size;
 } dma_device;
 
@@ -194,35 +191,31 @@ static int dev_release(struct inode *inodep, struct file *filep) {
 static ssize_t dev_read(struct file *filep, char *buffer, size_t len, loff_t *offset) {
     pr_info("device read\n");
     // return base addr and channel sizes to user
-    char buf[100];
-    sprintf(buf, "Base addr : 0x%lx\n", dma_dev->base_addr);
-    sprintf(buf + strlen(buf), "Send chan size : %ld\n", dma_dev->send_chan_size);
-    sprintf(buf + strlen(buf), "Recv chan size : %ld\n", dma_dev->rcv_chan_size);    
-    return copy_to_user(buffer, buf, strlen(buf));
+    char *buf = kzalloc(1024*4, GFP_KERNEL);
+    sprintf(buf, "Base addr : 0x%llx\n", dma_dev->base_addr);
+    sprintf(buf + strlen(buf), "Send chan size : %lld\n", dma_dev->send_chan_size);
+    sprintf(buf + strlen(buf), "Recv chan size : %lld\n", dma_dev->rcv_chan_size);    
+    sprintf(buf + strlen(buf), "Send chan addr : 0x%llx\n", dma_dev->send_chan_addr);    
+    sprintf(buf + strlen(buf), "Recv chan addr : 0x%llx\n", dma_dev->rcv_chan_addr);    
+    size_t wrote_len = copy_to_user(buffer, buf, strlen(buf));
+    kfree(buf);
+    return wrote_len;
 }
 
 static long dev_ioctl(struct file *filep, unsigned int cmd, unsigned long arg) {
     pr_info("device ioctl\n");
+    dma_regs_info_t user_data;
     switch(cmd) {
-        case AXIDMA_IOC_SET_BASE_ADDR:
-            if(copy_from_user(&dma_dev->base_addr, (uint64_t *)arg, sizeof(uint64_t))) {
+        case AXIDMA_IOC_SET_DATA:
+            if(copy_from_user(&user_data, (uint64_t *)arg, sizeof(dma_regs_info_t))) {
                 pr_err("Failed to copy base addr from user\n");
                 return -EFAULT;
             }
-            break;
-        
-        case AXIDMA_IOC_SET_SEND_CHAN_SIZE:
-            if(copy_from_user(&dma_dev->send_chan_size, (uint64_t *)arg, sizeof(uint64_t))) {
-                pr_err("Failed to copy send chan size from user\n");
-                return -EFAULT;
-            }
-            break;
-        
-        case AXIDMA_IOC_SET_RECV_CHAN_SIZE:
-            if(copy_from_user(&dma_dev->rcv_chan_size, (uint64_t *)arg, sizeof(uint64_t))) {
-                pr_err("Failed to copy recv chan size from user\n");
-                return -EFAULT;
-            }
+            dma_dev->base_addr = user_data.base_addr;
+            dma_dev->send_chan_addr = user_data.send_chan_addr;
+            dma_dev->send_chan_size = user_data.send_chan_size;
+            dma_dev->rcv_chan_addr = user_data.rcv_chan_addr;
+            dma_dev->rcv_chan_size = user_data.rcv_chan_size;
             break;
 
         default:
