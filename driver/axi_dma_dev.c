@@ -8,6 +8,7 @@
 #include <asm/io.h>
 #include <linux/slab.h>
 #include <linux/types.h>
+#include <linux/stddef.h>
 
 #include <linux/ioctl.h>
 #include "axi_dma_ioctl.h"
@@ -41,6 +42,18 @@ static struct file_operations fops = {
     .release = dev_release,
     .unlocked_ioctl = dev_ioctl,
 };
+
+
+/* bit manipulation */
+
+// set base's nth bit to 0
+#define SET_TO_ZERO(base, n_bit) (base &= ~(1 << n_bit))
+
+// set base's nth bit to 1
+#define SET_TO_ONE(base, n_bit) (base |= (1 << n_bit))
+
+// get the value of the nth bit of base
+#define GET_BIT(base, n_bit) ((base >> n_bit) & 1)
 
 /*
     xilinx specific dma registers and constants
@@ -129,8 +142,8 @@ typedef struct
     uint64_t base_addr;
     
     /* resources */
-    struct resource *regs;
     void __iomem *virtual_addr;
+    struct resource *base_res;
 
     /* channels */
     uint64_t send_chan_addr;
@@ -145,6 +158,31 @@ static int major;
 
 /* dma device */
 dma_device *dma_dev;
+
+int map_ressources(void)
+{
+    if(!dma_dev->base_addr) return -EINVAL;
+    dma_dev->base_res = request_mem_region(dma_dev->base_addr, sizeof(dma_registers_t), KBUILD_MODNAME);
+    if(!dma_dev->base_res) return -EBUSY;
+    dma_dev->virtual_addr = ioremap(dma_dev->base_addr, sizeof(dma_registers_t));
+    if(!dma_dev->virtual_addr) return -ENOMEM;
+    return 1;
+}
+
+
+void cleanup(void)
+{
+    if(dma_dev->virtual_addr)
+    {
+        iounmap(dma_dev->virtual_addr);
+        dma_dev->virtual_addr = NULL;
+    }
+    if(dma_dev->base_res)
+    {
+        release_mem_region(dma_dev->base_res->start, resource_size(dma_dev->base_res));
+        dma_dev->base_res = NULL;
+    }
+}
 
 static int __init axi_dma_init(void) {
     major = register_chrdev(0, KBUILD_MODNAME, &fops);
@@ -166,8 +204,7 @@ static int __init axi_dma_init(void) {
 
 static void __exit axi_dma_exit(void) {
     unregister_chrdev(major, KBUILD_MODNAME);
-    // iounmap(dma_dev.virtual_addr);
-    // release_mem_region(DMA_BASE, REGISTER_SIZE);
+    cleanup();
     kfree(dma_dev);
     pr_info("module has been unloaded\n");
 }
@@ -190,14 +227,68 @@ static int dev_release(struct inode *inodep, struct file *filep) {
 
 static ssize_t dev_read(struct file *filep, char *buffer, size_t len, loff_t *offset) {
     pr_info("device read\n");
-    // return base addr and channel sizes to user
     char *buf = kzalloc(1024*4, GFP_KERNEL);
     sprintf(buf, "Base addr : 0x%llx\n", dma_dev->base_addr);
     sprintf(buf + strlen(buf), "Send chan size : %lld\n", dma_dev->send_chan_size);
     sprintf(buf + strlen(buf), "Recv chan size : %lld\n", dma_dev->rcv_chan_size);    
     sprintf(buf + strlen(buf), "Send chan addr : 0x%llx\n", dma_dev->send_chan_addr);    
     sprintf(buf + strlen(buf), "Recv chan addr : 0x%llx\n", dma_dev->rcv_chan_addr);    
+    
+    if (!dma_dev->base_addr) return -EINVAL;
+    if (!dma_dev->base_res)  return -EINVAL;
+    if (!dma_dev->virtual_addr) return -EINVAL;
+
+    dma_registers_t *regs = kmalloc(sizeof(dma_registers_t), GFP_KERNEL); 
+    ioread32_rep(dma_dev->virtual_addr, regs, sizeof(dma_registers_t)/sizeof(uint32_t));
+    uint32_t status_reg = regs->MM2S_DMASR;
+
+    SET_TO_ONE(regs->S2MM_DMACR, DMA_CR_RESET);
+    SET_TO_ONE(regs->MM2S_DMACR, DMA_CR_RESET);
+
+    SET_TO_ZERO(regs->S2MM_DMACR, DMA_CR_RUN_STOP);
+    SET_TO_ZERO(regs->MM2S_DMACR, DMA_CR_RUN_STOP);
+
+    // SET_TO_ONE(regs->MM2S_DMACR, DMA_CR_RUN_STOP);
+    // SET_TO_ONE(regs->MM2S_DMACR, DMA_CR_IOC_IRQ_EN);
+    // SET_TO_ONE(regs->MM2S_DMACR, DMA_CR_ERR_IRQ_EN);
+
+    // SET_TO_ONE(regs->S2MM_DMACR, DMA_CR_RUN_STOP);
+    // SET_TO_ONE(regs->S2MM_DMACR, DMA_CR_IOC_IRQ_EN);
+    // SET_TO_ONE(regs->S2MM_DMACR, DMA_CR_ERR_IRQ_EN);
+
+    regs->MM2S_SA = dma_dev->send_chan_addr;
+    regs->S2MM_DA = dma_dev->rcv_chan_addr;
+
+    regs->MM2S_LENGTH = dma_dev->send_chan_size;
+    regs->S2MM_LENGTH = dma_dev->rcv_chan_size;
+
+    
+    uint32_t send_sr = ioread32(dma_dev->virtual_addr + offsetof(dma_registers_t, MM2S_DMASR));
+    uint32_t rcv_sr = ioread32(dma_dev->virtual_addr + offsetof(dma_registers_t, S2MM_DMASR));
+
+    while (( GET_BIT(send_sr, DMA_SR_IDLE) != 1 ) || ( GET_BIT(rcv_sr, DMA_SR_IDLE) != 1 ))
+    {
+        send_sr = ioread32(dma_dev->virtual_addr + offsetof(dma_registers_t, MM2S_DMASR));
+        rcv_sr = ioread32(dma_dev->virtual_addr + offsetof(dma_registers_t, S2MM_DMASR));
+    }
+
+
+    iowrite32_rep(dma_dev->virtual_addr, regs, sizeof(dma_registers_t)/sizeof(uint32_t));
+
+    if (GET_BIT(status_reg, DMA_SR_HALTED)) sprintf(buf+ strlen(buf), "DMA_SR_HALTED "); else sprintf(buf+ strlen(buf), "NOT DMA_SR_HALTED ");
+    if (GET_BIT(status_reg, DMA_SR_IDLE)) sprintf(buf+ strlen(buf), "DMA_SR_IDLE ");
+    if (GET_BIT(status_reg, DMA_SR_SG_INCLD)) sprintf(buf+ strlen(buf), "DMA_SR_SG_INCLD ");
+    if (GET_BIT(status_reg, DMA_SR_DMA_INT_ERR)) sprintf(buf+ strlen(buf), "DMA_SR_DMA_INT_ERR ");
+    if (GET_BIT(status_reg, DMA_SR_DMA_SLV_ERR)) sprintf(buf+ strlen(buf), "DMA_SR_DMA_SLV_ERR ");
+    if (GET_BIT(status_reg, DMA_SR_DMA_DEC_ERR)) sprintf(buf+ strlen(buf), "DMA_SR_DMA_DEC_ERR ");
+    if (GET_BIT(status_reg, DMA_SR_SG_INT_ERR)) sprintf(buf+ strlen(buf), "DMA_SR_SG_INT_ERR ");
+    if (GET_BIT(status_reg, DMA_SR_SG_SLV_ERR)) sprintf(buf+ strlen(buf), "DMA_SR_SG_SLV_ERR ");
+    if (GET_BIT(status_reg, DMA_SR_SG_DEC_ERR)) sprintf(buf+ strlen(buf), "DMA_SR_SG_DEC_ERR ");
+    if (GET_BIT(status_reg, DMA_SR_IOC_IRQ)) sprintf(buf+ strlen(buf), "DMA_SR_IOC_IRQ ");
+    if (GET_BIT(status_reg, DMA_SR_ERR_IRQ)) sprintf(buf+ strlen(buf), "DMA_SR_ERR_IRQ ");
+
     size_t wrote_len = copy_to_user(buffer, buf, strlen(buf));
+    kfree(regs);
     kfree(buf);
     return wrote_len;
 }
@@ -216,6 +307,10 @@ static long dev_ioctl(struct file *filep, unsigned int cmd, unsigned long arg) {
             dma_dev->send_chan_size = user_data.send_chan_size;
             dma_dev->rcv_chan_addr = user_data.rcv_chan_addr;
             dma_dev->rcv_chan_size = user_data.rcv_chan_size;
+
+            cleanup();
+            int ret = map_ressources();
+            if(ret < 0) return ret;
             break;
 
         default:
