@@ -9,16 +9,14 @@
 #include <linux/slab.h>
 #include <linux/types.h>
 #include <linux/stddef.h>
-
 #include <linux/ioctl.h>
+
 #include "axi_dma_ioctl.h"
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("T-Sai");
 MODULE_DESCRIPTION("AXI DMA driver");
 MODULE_VERSION("0.1");
-
-
 
 #ifdef pr_fmt
 #undef pr_fmt
@@ -28,7 +26,6 @@ MODULE_VERSION("0.1");
 /*
     File operations
 */
-
 static int dev_open(struct inode*, struct file*);
 static int dev_release(struct inode*, struct file*);
 static ssize_t dev_read(struct file*, char*, size_t, loff_t*);
@@ -42,25 +39,6 @@ static struct file_operations fops = {
     .release = dev_release,
     .unlocked_ioctl = dev_ioctl,
 };
-
-
-/* bit manipulation */
-
-// set base's nth bit to 0
-#define SET_TO_ZERO(base, n_bit) (base &= ~(1 << n_bit))
-
-// set base's nth bit to 1
-#define SET_TO_ONE(base, n_bit) (base |= (1 << n_bit))
-
-// get the value of the nth bit of base
-#define GET_BIT(base, n_bit) ((base >> n_bit) & 1)
-
-/*
-    xilinx specific dma registers and constants
-
-    https://docs.xilinx.com/r/en-US/pg021_axi_dma/AXI-DMA-Register-Address-Map
-
-*/
 
 typedef struct
 {
@@ -88,6 +66,7 @@ typedef struct
     uint32_t RESERVED12;    // 0x54 Reserved
     uint32_t S2MM_LENGTH;   // 0x58 S2MM Transfer Length (Bytes)
 } dma_registers_t;
+
 
 typedef enum {
                             // Default value    Access type     Description
@@ -132,59 +111,136 @@ typedef enum {
     // rest are ignored in direct register mode. used in scather gather mode
 } DMA_SR;
 
-/*
 
-    dma device
-*/
 
-typedef struct  
+/* bit operations */
+#define SET_BIT(x, pos) (x |= (1U << pos))
+#define CLEAR_BIT(x, pos) (x &= (~(1U<< pos)))
+#define GET_BIT(x, pos) ((x>>pos) & 1U)
+
+/* read write 32 bit from dma registers */
+#define DMA_RD(virt_addr, field)  ioread32(virt_addr + offsetof(dma_registers_t, field))
+#define DMA_WR(virt_addr, field, value)  iowrite32(value, virt_addr + offsetof(dma_registers_t, field))
+
+volatile void __iomem *regs_vaddr = NULL;
+struct resource *regs_res = NULL;
+dma_info_t* user_info;
+
+void dma_status_info(volatile void* regs_vaddr) 
 {
-    uint64_t base_addr;
-    
-    /* resources */
-    void __iomem *virtual_addr;
-    struct resource *base_res;
+    unsigned int status = DMA_RD(regs_vaddr, MM2S_DMASR);
+    pr_info("MM2S :");
+    if (status & 0x00000001) pr_info(" halted"); else pr_info(" running");
+    if (status & 0x00000002) pr_info(" idle");
+    if (status & 0x00000008) pr_info(" SGIncld");
+    if (status & 0x00000010) pr_info(" DMAIntErr");
+    if (status & 0x00000020) pr_info(" DMASlvErr");
+    if (status & 0x00000040) pr_info(" DMADecErr");
+    if (status & 0x00000100) pr_info(" SGIntErr");
+    if (status & 0x00000200) pr_info(" SGSlvErr");
+    if (status & 0x00000400) pr_info(" SGDecErr");
+    if (status & 0x00001000) pr_info(" IOC_Irq");
+    if (status & 0x00002000) pr_info(" Dly_Irq");
+    if (status & 0x00004000) pr_info(" Err_Irq");
 
-    /* channels */
-    uint64_t send_chan_addr;
-    uint64_t send_chan_size;
-
-    uint64_t rcv_chan_addr;
-    uint64_t rcv_chan_size;
-} dma_device;
-
-/* device driver */
-static int major;
-
-/* dma device */
-dma_device *dma_dev;
-
-int map_ressources(void)
-{
-    if(!dma_dev->base_addr) return -EINVAL;
-    dma_dev->base_res = request_mem_region(dma_dev->base_addr, sizeof(dma_registers_t), KBUILD_MODNAME);
-    if(!dma_dev->base_res) return -EBUSY;
-    dma_dev->virtual_addr = ioremap(dma_dev->base_addr, sizeof(dma_registers_t));
-    if(!dma_dev->virtual_addr) return -ENOMEM;
-    return 1;
+    pr_info("S2MM :");
+    status = DMA_RD(regs_vaddr, S2MM_DMASR);
+    if (status & 0x00000001) pr_info(" halted"); else pr_info(" running");
+    if (status & 0x00000002) pr_info(" idle");
+    if (status & 0x00000008) pr_info(" SGIncld");
+    if (status & 0x00000010) pr_info(" DMAIntErr");
+    if (status & 0x00000020) pr_info(" DMASlvErr");
+    if (status & 0x00000040) pr_info(" DMADecErr");
+    if (status & 0x00000100) pr_info(" SGIntErr");
+    if (status & 0x00000200) pr_info(" SGSlvErr");
+    if (status & 0x00000400) pr_info(" SGDecErr");
+    if (status & 0x00001000) pr_info(" IOC_Irq");
+    if (status & 0x00002000) pr_info(" Dly_Irq");
+    if (status & 0x00004000) pr_info(" Err_Irq");
 }
 
+void reset_DMA(void)
+{
+    if(!regs_vaddr) return;
+    u32 val = 0;
+    SET_BIT(val, DMA_CR_RESET);
+    DMA_WR(regs_vaddr, MM2S_DMACR, val);
+    DMA_WR(regs_vaddr, S2MM_DMACR, val);
+}
+
+void halt_DMA(void)
+{
+    if(!regs_vaddr) return;
+    DMA_WR(regs_vaddr, MM2S_DMACR, 0);
+    DMA_WR(regs_vaddr, S2MM_DMACR, 0);
+}
+
+void start_transfer(void)
+{   
+    if(!regs_vaddr) return;
+    // start with IOC and ERR interrupts enabled
+    u32 value = 0;
+    SET_BIT(value, DMA_CR_RUN_STOP);
+    SET_BIT(value, DMA_CR_IOC_IRQ_EN);
+    SET_BIT(value, DMA_CR_ERR_IRQ_EN);
+
+    DMA_WR(regs_vaddr, MM2S_DMACR, value);
+    DMA_WR(regs_vaddr, S2MM_DMACR, value);
+}
+
+void attach_buffers(u64 saddr, u64 raddr)
+{
+    if(!regs_vaddr) return;
+    DMA_WR(regs_vaddr, MM2S_SA, saddr);
+    DMA_WR(regs_vaddr, S2MM_DA, raddr);
+}
+
+void set_lengths(u64 ssize, u64 rsize)
+{
+    if(!regs_vaddr) return;
+    DMA_WR(regs_vaddr, MM2S_LENGTH, ssize);
+    DMA_WR(regs_vaddr, S2MM_LENGTH, rsize);
+}
 
 void cleanup(void)
 {
-    if(dma_dev->virtual_addr)
+    if(regs_res)
     {
-        iounmap(dma_dev->virtual_addr);
-        dma_dev->virtual_addr = NULL;
+        release_mem_region(regs_res->start, resource_size(regs_res));
+        regs_res = NULL;
     }
-    if(dma_dev->base_res)
+
+    if(regs_vaddr)
     {
-        release_mem_region(dma_dev->base_res->start, resource_size(dma_dev->base_res));
-        dma_dev->base_res = NULL;
+        iounmap(regs_vaddr);
+        regs_vaddr = NULL;
     }
 }
 
-static int __init axi_dma_init(void) {
+int request_and_map(u64 base_addr)
+{
+    cleanup();
+    regs_res = request_mem_region( base_addr, sizeof(dma_registers_t), KBUILD_MODNAME);
+    if(!regs_res)
+    {
+        pr_err("request mem region failed for 0x%lx", base_addr);
+        return 0;
+    }
+
+    regs_vaddr = (dma_registers_t*) ioremap_nocache(base_addr, sizeof(dma_registers_t));
+    if(!regs_vaddr)
+    {
+
+        pr_err("ioremap_nocache failed");
+        return 0;
+    }
+    return 1;
+}
+/* device driver */
+static int major;
+
+static int __init axi_dma_init(void) 
+{
     major = register_chrdev(0, KBUILD_MODNAME, &fops);
     if(major < 0) {
         pr_err("Failed to register character device\n");
@@ -193,131 +249,110 @@ static int __init axi_dma_init(void) {
         pr_info("Registered character device with major number %d\n", major);
     }
 
-    dma_dev = kzalloc(sizeof(dma_device), GFP_KERNEL);
-    if(!dma_dev) {
-        pr_err("Failed to allocate memory for dma_dev\n");
-        return -ENOMEM;
-    }
+    user_info = kmalloc(sizeof(dma_info_t), GFP_KERNEL);
 
     return 0;
 }
 
-static void __exit axi_dma_exit(void) {
-    unregister_chrdev(major, KBUILD_MODNAME);
+static void __exit axi_dma_exit(void) 
+{
     cleanup();
-    kfree(dma_dev);
+    kfree(user_info);
+    unregister_chrdev(major, KBUILD_MODNAME);
     pr_info("module has been unloaded\n");
 }
 
-static int dev_open(struct inode *inodep, struct file *filep) {
-   pr_info("device opened\n");
-   return 0;
-}
+static int dev_open(struct inode *inodep, struct file *filep) 
+{
+    pr_info("device opened\n");
 
-static ssize_t dev_write(struct file *filep, const char *buffer,
-                         size_t len, loff_t *offset) {
-    pr_info("device written\n");
+    // if(!request_and_map(0x40400000))
+    // {
+    //     return 0;
+    // }
+
+    // dma_status_info(regs_vaddr);
+
+    // reset_DMA();
+    // dma_status_info(regs_vaddr);
+
+    // halt_DMA();
+    // dma_status_info(regs_vaddr);
+
+    // start_transfer();
+    // dma_status_info(regs_vaddr);
+
     return 0;
 }
 
-static int dev_release(struct inode *inodep, struct file *filep) {
+static ssize_t dev_write(struct file *filep, const char *buffer,
+                         size_t len, loff_t *offset) 
+{
+    pr_info("device written\n");
+    if(! (regs_res && regs_vaddr))
+    {
+        pr_err("resource not map");
+        return -EINVAL;
+    }
+
+    // dma_status_info(regs_vaddr);
+
+    reset_DMA();
+    // dma_status_info(regs_vaddr);
+
+    halt_DMA();
+    dma_status_info(regs_vaddr);
+
+    attach_buffers(user_info->saddr, user_info->raddr);
+
+    start_transfer();
+    dma_status_info(regs_vaddr);
+
+    set_lengths(user_info->ssize, user_info->rsize);
+    dma_status_info(regs_vaddr);
+
+    return len;
+}
+
+
+static ssize_t dev_read(struct file *filep, char *buffer,
+                        size_t len, loff_t *offset)
+{
+    pr_info("device read\n");
+    return 0;
+}
+
+static int dev_release(struct inode *inodep, struct file *filep) 
+{
    pr_info("device close\n");
    return 0;
 }
 
-static ssize_t dev_read(struct file *filep, char *buffer, size_t len, loff_t *offset) {
-    pr_info("device read\n");
-    char *buf = kzalloc(1024*4, GFP_KERNEL);
-    sprintf(buf, "Base addr : 0x%llx\n", dma_dev->base_addr);
-    sprintf(buf + strlen(buf), "Send chan size : %lld\n", dma_dev->send_chan_size);
-    sprintf(buf + strlen(buf), "Recv chan size : %lld\n", dma_dev->rcv_chan_size);    
-    sprintf(buf + strlen(buf), "Send chan addr : 0x%llx\n", dma_dev->send_chan_addr);    
-    sprintf(buf + strlen(buf), "Recv chan addr : 0x%llx\n", dma_dev->rcv_chan_addr);    
-    
-    if (!dma_dev->base_addr) return -EINVAL;
-    if (!dma_dev->base_res)  return -EINVAL;
-    if (!dma_dev->virtual_addr) return -EINVAL;
 
-    dma_registers_t *regs = kmalloc(sizeof(dma_registers_t), GFP_KERNEL); 
-    ioread32_rep(dma_dev->virtual_addr, regs, sizeof(dma_registers_t)/sizeof(uint32_t));
-    uint32_t status_reg = regs->MM2S_DMASR;
-
-    SET_TO_ONE(regs->S2MM_DMACR, DMA_CR_RESET);
-    SET_TO_ONE(regs->MM2S_DMACR, DMA_CR_RESET);
-
-    SET_TO_ZERO(regs->S2MM_DMACR, DMA_CR_RUN_STOP);
-    SET_TO_ZERO(regs->MM2S_DMACR, DMA_CR_RUN_STOP);
-
-    // SET_TO_ONE(regs->MM2S_DMACR, DMA_CR_RUN_STOP);
-    // SET_TO_ONE(regs->MM2S_DMACR, DMA_CR_IOC_IRQ_EN);
-    // SET_TO_ONE(regs->MM2S_DMACR, DMA_CR_ERR_IRQ_EN);
-
-    // SET_TO_ONE(regs->S2MM_DMACR, DMA_CR_RUN_STOP);
-    // SET_TO_ONE(regs->S2MM_DMACR, DMA_CR_IOC_IRQ_EN);
-    // SET_TO_ONE(regs->S2MM_DMACR, DMA_CR_ERR_IRQ_EN);
-
-    regs->MM2S_SA = dma_dev->send_chan_addr;
-    regs->S2MM_DA = dma_dev->rcv_chan_addr;
-
-    regs->MM2S_LENGTH = dma_dev->send_chan_size;
-    regs->S2MM_LENGTH = dma_dev->rcv_chan_size;
-
-    
-    uint32_t send_sr = ioread32(dma_dev->virtual_addr + offsetof(dma_registers_t, MM2S_DMASR));
-    uint32_t rcv_sr = ioread32(dma_dev->virtual_addr + offsetof(dma_registers_t, S2MM_DMASR));
-
-    while (( GET_BIT(send_sr, DMA_SR_IDLE) != 1 ) || ( GET_BIT(rcv_sr, DMA_SR_IDLE) != 1 ))
-    {
-        send_sr = ioread32(dma_dev->virtual_addr + offsetof(dma_registers_t, MM2S_DMASR));
-        rcv_sr = ioread32(dma_dev->virtual_addr + offsetof(dma_registers_t, S2MM_DMASR));
-    }
-
-
-    iowrite32_rep(dma_dev->virtual_addr, regs, sizeof(dma_registers_t)/sizeof(uint32_t));
-
-    if (GET_BIT(status_reg, DMA_SR_HALTED)) sprintf(buf+ strlen(buf), "DMA_SR_HALTED "); else sprintf(buf+ strlen(buf), "NOT DMA_SR_HALTED ");
-    if (GET_BIT(status_reg, DMA_SR_IDLE)) sprintf(buf+ strlen(buf), "DMA_SR_IDLE ");
-    if (GET_BIT(status_reg, DMA_SR_SG_INCLD)) sprintf(buf+ strlen(buf), "DMA_SR_SG_INCLD ");
-    if (GET_BIT(status_reg, DMA_SR_DMA_INT_ERR)) sprintf(buf+ strlen(buf), "DMA_SR_DMA_INT_ERR ");
-    if (GET_BIT(status_reg, DMA_SR_DMA_SLV_ERR)) sprintf(buf+ strlen(buf), "DMA_SR_DMA_SLV_ERR ");
-    if (GET_BIT(status_reg, DMA_SR_DMA_DEC_ERR)) sprintf(buf+ strlen(buf), "DMA_SR_DMA_DEC_ERR ");
-    if (GET_BIT(status_reg, DMA_SR_SG_INT_ERR)) sprintf(buf+ strlen(buf), "DMA_SR_SG_INT_ERR ");
-    if (GET_BIT(status_reg, DMA_SR_SG_SLV_ERR)) sprintf(buf+ strlen(buf), "DMA_SR_SG_SLV_ERR ");
-    if (GET_BIT(status_reg, DMA_SR_SG_DEC_ERR)) sprintf(buf+ strlen(buf), "DMA_SR_SG_DEC_ERR ");
-    if (GET_BIT(status_reg, DMA_SR_IOC_IRQ)) sprintf(buf+ strlen(buf), "DMA_SR_IOC_IRQ ");
-    if (GET_BIT(status_reg, DMA_SR_ERR_IRQ)) sprintf(buf+ strlen(buf), "DMA_SR_ERR_IRQ ");
-
-    size_t wrote_len = copy_to_user(buffer, buf, strlen(buf));
-    kfree(regs);
-    kfree(buf);
-    return wrote_len;
-}
-
-static long dev_ioctl(struct file *filep, unsigned int cmd, unsigned long arg) {
+static long dev_ioctl(struct file *filep, unsigned int cmd, unsigned long arg)
+{
     pr_info("device ioctl\n");
-    dma_regs_info_t user_data;
-    switch(cmd) {
-        case AXIDMA_IOC_SET_DATA:
-            if(copy_from_user(&user_data, (uint64_t *)arg, sizeof(dma_regs_info_t))) {
+    // dma_info_t ioctl_uinfo; // error if not in stack
+    switch (cmd)
+    {
+    case AXIDMA_IOC_INFO:
+        if(copy_from_user(user_info, (uint64_t *)arg, sizeof(dma_info_t))) {
                 pr_err("Failed to copy base addr from user\n");
                 return -EFAULT;
-            }
-            dma_dev->base_addr = user_data.base_addr;
-            dma_dev->send_chan_addr = user_data.send_chan_addr;
-            dma_dev->send_chan_size = user_data.send_chan_size;
-            dma_dev->rcv_chan_addr = user_data.rcv_chan_addr;
-            dma_dev->rcv_chan_size = user_data.rcv_chan_size;
+        }
 
-            cleanup();
-            int ret = map_ressources();
-            if(ret < 0) return ret;
-            break;
-
-        default:
+        if(!request_and_map(user_info->base_addr))
+        {
             return -EINVAL;
+        }
+        break;
+    
+    default:
+        break;
     }
+
+
     return 1;
 }
-
 module_init(axi_dma_init);
 module_exit(axi_dma_exit);
