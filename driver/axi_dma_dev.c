@@ -124,9 +124,9 @@ typedef enum {
 
 volatile void __iomem *regs_vaddr = NULL;
 struct resource *regs_res = NULL;
-dma_info_t* user_info;
+dma_info_t* user_info = NULL;
 
-void dma_status_info(volatile void* regs_vaddr) 
+void dma_status_info(void) 
 {
     unsigned int status = DMA_RD(regs_vaddr, MM2S_DMASR);
     pr_info("MM2S :");
@@ -202,6 +202,12 @@ void set_lengths(u64 ssize, u64 rsize)
     DMA_WR(regs_vaddr, S2MM_LENGTH, rsize);
 }
 
+void wait_transfer(void)
+{
+    while ( ( GET_BIT(DMA_RD(regs_vaddr, MM2S_DMASR), DMA_SR_IOC_IRQ) != 1 ) ||  
+            ( GET_BIT(DMA_RD(regs_vaddr, S2MM_DMASR), DMA_SR_IOC_IRQ) != 1 )){}
+}
+
 void cleanup(void)
 {
     if(regs_res)
@@ -227,7 +233,7 @@ int request_and_map(u64 base_addr)
         return 0;
     }
 
-    regs_vaddr = (dma_registers_t*) ioremap_nocache(base_addr, sizeof(dma_registers_t));
+    regs_vaddr = ioremap_nocache(base_addr, sizeof(dma_registers_t));
     if(!regs_vaddr)
     {
 
@@ -265,23 +271,6 @@ static void __exit axi_dma_exit(void)
 static int dev_open(struct inode *inodep, struct file *filep) 
 {
     pr_info("device opened\n");
-
-    // if(!request_and_map(0x40400000))
-    // {
-    //     return 0;
-    // }
-
-    // dma_status_info(regs_vaddr);
-
-    // reset_DMA();
-    // dma_status_info(regs_vaddr);
-
-    // halt_DMA();
-    // dma_status_info(regs_vaddr);
-
-    // start_transfer();
-    // dma_status_info(regs_vaddr);
-
     return 0;
 }
 
@@ -289,27 +278,7 @@ static ssize_t dev_write(struct file *filep, const char *buffer,
                          size_t len, loff_t *offset) 
 {
     pr_info("device written\n");
-    if(! (regs_res && regs_vaddr))
-    {
-        pr_err("resource not map");
-        return -EINVAL;
-    }
 
-    // dma_status_info(regs_vaddr);
-
-    reset_DMA();
-    // dma_status_info(regs_vaddr);
-
-    halt_DMA();
-    dma_status_info(regs_vaddr);
-
-    attach_buffers(user_info->saddr, user_info->raddr);
-
-    start_transfer();
-    dma_status_info(regs_vaddr);
-
-    set_lengths(user_info->ssize, user_info->rsize);
-    dma_status_info(regs_vaddr);
 
     return len;
 }
@@ -332,7 +301,7 @@ static int dev_release(struct inode *inodep, struct file *filep)
 static long dev_ioctl(struct file *filep, unsigned int cmd, unsigned long arg)
 {
     pr_info("device ioctl\n");
-    // dma_info_t ioctl_uinfo; // error if not in stack
+    mmio_info_t user_mmio; // error if not in stack
     switch (cmd)
     {
     case AXIDMA_IOC_INFO:
@@ -347,6 +316,44 @@ static long dev_ioctl(struct file *filep, unsigned int cmd, unsigned long arg)
         }
         break;
     
+    case AXIDMA_IOC_MMIO_WR:
+        if(copy_from_user(&user_mmio, (uint64_t *)arg, sizeof(mmio_info_t))) {
+                pr_err("Failed to copy base addr from user\n");
+                return -EFAULT;
+        }
+        volatile void __iomem * vaddr = ioremap_nocache(user_mmio.base_addr, sizeof(mmio_info_t));
+        if(!vaddr)
+        {
+            pr_err("failed ioremap address 0x%lx", user_mmio.base_addr);
+            return -EINVAL;
+        }
+        iowrite32(user_mmio.value, vaddr+user_mmio.offset);
+        iounmap(vaddr);
+        break;
+    
+    case AXIDMA_IOC_MMIO_RD:
+        break;
+    
+    case AXIDMA_IOC_START:
+        if(! (regs_res && regs_vaddr))
+        {
+            pr_err("resource not map");
+            return -EINVAL;
+        }
+    
+        reset_DMA();
+    
+        halt_DMA();
+    
+        attach_buffers(user_info->saddr, user_info->raddr);
+    
+        start_transfer();
+    
+        set_lengths(user_info->ssize, user_info->rsize);
+    
+        wait_transfer();
+        break;
+        
     default:
         break;
     }
@@ -354,5 +361,6 @@ static long dev_ioctl(struct file *filep, unsigned int cmd, unsigned long arg)
 
     return 1;
 }
+
 module_init(axi_dma_init);
 module_exit(axi_dma_exit);

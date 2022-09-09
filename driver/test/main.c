@@ -11,14 +11,17 @@
 /* ioctl api */
 #include "../axi_dma_ioctl.h"
 
-#define DATA_SIZE 10
+#define DATA_SIZE 200
 
 int main(int argc, char const *argv[])
 {
   
     // load_bitstream("/home/xilinx/pynq/overlays/threshold/threshold.bit");
-    const char* bit_filename = "/home/xilinx/pynq/overlays/copy/copy.bit";
-    const char* hwh_filename = "/home/xilinx/pynq/overlays/copy/copy.hwh";
+    // const char* bit_filename = "/home/xilinx/pynq/overlays/copy/copy.bit";
+    // const char* hwh_filename = "/home/xilinx/pynq/overlays/copy/copy.hwh";
+
+    const char* bit_filename = "/home/xilinx/pynq/overlays/threshold/threshold.bit";
+    const char* hwh_filename = "/home/xilinx/pynq/overlays/threshold/threshold.hwh";
 
     bitstream_header_t* header;
     c_load_bitstream(bit_filename, 0, &header);
@@ -43,43 +46,45 @@ int main(int argc, char const *argv[])
     if(!allocate_cma_buffer(&cma_send_buffer, DATA_SIZE*sizeof(unsigned int))) return 1;
     if(!allocate_cma_buffer(&cma_recv_buffer, DATA_SIZE*sizeof(unsigned int))) return 1;
 
-    memset(cma_recv_buffer.virtual_address, -1, DATA_SIZE*sizeof(unsigned int));
+    memset(cma_recv_buffer.virtual_address, 0, DATA_SIZE*sizeof(unsigned int));
     
-    unsigned int *ad = cma_send_buffer.virtual_address;
+    unsigned int *sbuff = cma_send_buffer.virtual_address;
     
     for(unsigned int i=0; i < DATA_SIZE; i++)
     {
-        ad[i] = i;
+        sbuff[i] = i;
+    }
+    
+    mmio_info_t axi_lite = {
+        .base_addr = 0x40000000,
+        .offset = 0,
+        .value = 0x81
+    };
+
+    if(ioctl(fd, AXIDMA_IOC_MMIO_WR, &axi_lite) < 0) {
+        perror("Error setting base address");
+        return 1;
     }
 
-    /* set send channel size */
-    unsigned long send_chan_size = DATA_SIZE*sizeof(unsigned int);
-    unsigned long send_chan_addr = cma_send_buffer.physical_address;
-    
-    /* set receive channel size */
-    unsigned long rcv_chan_size = DATA_SIZE*sizeof(unsigned int);
-    unsigned long rcv_chan_addr = cma_recv_buffer.physical_address;
-
     data.base_addr  = base_addr; 
-    data.ssize = send_chan_size; 
-    data.saddr = send_chan_addr; 
-    data.rsize = rcv_chan_size; 
-    data.raddr = rcv_chan_addr; 
-
-
+    data.ssize = DATA_SIZE*sizeof(unsigned int); 
+    data.saddr = cma_send_buffer.physical_address; 
+    data.rsize = DATA_SIZE*sizeof(unsigned int); 
+    data.raddr = cma_recv_buffer.physical_address; 
 
     if(ioctl(fd, AXIDMA_IOC_INFO, &data) < 0) {
         perror("Error setting base address");
         return 1;
     }
 
-    // char read_buf[1024*4];
-    // read(fd, read_buf, 1024*4);
-    // printf("%s\n", read_buf);
-
-    write(fd, "aaa", 3);
-    getchar();
-
+    // 0x40000000
+    
+    if(ioctl(fd, AXIDMA_IOC_START, NULL) < 0) {
+        perror("Error resource not map");
+        return 1;
+    }
+    // getchar();
+    
     for(int i=0; i < DATA_SIZE; i++)
     {
        printf("[%d] : %u\n" ,i,cma_recv_buffer.virtual_address[i]);
