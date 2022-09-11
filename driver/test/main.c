@@ -18,6 +18,18 @@ int main(int argc, char const *argv[])
     const char* bit_filename = "/home/xilinx/pynq/overlays/threshold/threshold.bit";
     const char* hwh_filename = "/home/xilinx/pynq/overlays/threshold/threshold.hwh";
 
+    if(access(bit_filename, F_OK) != 0)
+    {
+        printf("\n[ERROR] missing bitstream @ \"%s\" can't test driver.\n\n", bit_filename);
+        return 1;
+    }
+
+    if(access(hwh_filename, F_OK) != 0)
+    {
+        printf("\n[ERROR] missing .hwh @ \"%s\" can't test driver.\n\n", hwh_filename);
+        return 1;
+    }
+
     bitstream_header_t* header;
     c_load_bitstream(bit_filename, 0, &header);
     printf("Loading :\n");
@@ -31,7 +43,7 @@ int main(int argc, char const *argv[])
         return 1;
     }
 
-    /* set base address */
+    /* get base address */
     unsigned long base_addr = get_dma_base(hwh_filename);
     printf("base addr : 0x%lx \n", base_addr);
 
@@ -46,16 +58,21 @@ int main(int argc, char const *argv[])
     memset(cma_recv_buffer.virtual_address, -1, DATA_SIZE*sizeof(unsigned int));
     
     unsigned int *sbuff = cma_send_buffer.virtual_address;
+    unsigned int *rbuff = cma_recv_buffer.virtual_address;
+
     for(unsigned int i=0; i < DATA_SIZE; i++)
     {
         sbuff[i] = i;
     }
     
-    /* start and auto restart for threshold IP */
+    unsigned long ctrl_base_addr = get_axi_ctrl_base(hwh_filename);
+    printf("axi base addr : 0x%lx \n", ctrl_base_addr);
+
+    /* starting threshold IP trough axi lite */
     mmio_info_t axi_lite = {
-        .base_addr = 0x40000000,
-        .offset = 0,
-        .value = 0x81
+        .base_addr = ctrl_base_addr,
+        .offset = 0,                    /* 0x0  : offset of the control register */
+        .value = 0x81                   /* 0x81 : set to 1 bits corresponding to ap_start and auto_restart */
     };
 
     if(ioctl(fd, AXIDMA_IOC_MMIO_WR, &axi_lite) < 0) {
@@ -83,10 +100,23 @@ int main(int argc, char const *argv[])
         return 1;
     }
     
+    int res = 1;
     for(int i=0; i < DATA_SIZE; i++)
     {
-       printf("[%d] : %u\n" ,i,cma_recv_buffer.virtual_address[i]);
+        if(rbuff[i] != ((sbuff[i] <= 127) ? 0 : 255)){
+            res = 0;
+            break;
+        }
     }
+
+    printf("#------------------------------------#\n");
+    if(res) {
+        printf("[OK] test passed.\n");
+    } else {
+        printf("[FAILED] test failed arrays are not equal.\n");
+    }
+    printf("#------------------------------------#\n");
+
     
     close(fd);
     free_cma_buffer(&cma_send_buffer);
