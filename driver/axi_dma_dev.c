@@ -1,3 +1,14 @@
+/*
+    This driver performs a dma transfer through ioctl commands
+    allows user to write to a physical memory
+
+    linux : 4.19.0-xilinx-v2019.1
+
+    T-Sai
+*/
+
+
+
 #include <linux/init.h>
 #include <linux/module.h>
 #include <linux/kernel.h>
@@ -40,6 +51,7 @@ static struct file_operations fops = {
     .unlocked_ioctl = dev_ioctl,
 };
 
+/* xilinx's axi dma registers */
 typedef struct
 {
     uint32_t MM2S_DMACR;    // 0x0 MM2S DMA Control register
@@ -67,7 +79,7 @@ typedef struct
     uint32_t S2MM_LENGTH;   // 0x58 S2MM Transfer Length (Bytes)
 } dma_registers_t;
 
-
+/* control register bitmap */
 typedef enum {
                             // Default value    Access type     Description
     DMA_CR_RUN_STOP = 0,           // 0                R/W             0 = STOP, 1 = RUN
@@ -90,6 +102,7 @@ typedef enum {
     // rest are ignored in direct register mode. used in scather gather mode
 } DMA_CR;
 
+/* status register bitmap */
 typedef enum {
                             // Default value    Access type     Description
     DMA_SR_HALTED = 0,             // 1                RO              0 = DMA channel is running, 1 = DMA channel is halted
@@ -111,9 +124,7 @@ typedef enum {
     // rest are ignored in direct register mode. used in scather gather mode
 } DMA_SR;
 
-
-
-/* bit operations */
+/* bit operations macro */
 #define SET_BIT(x, pos) (x |= (1U << pos))
 #define CLEAR_BIT(x, pos) (x &= (~(1U<< pos)))
 #define GET_BIT(x, pos) ((x>>pos) & 1U)
@@ -122,10 +133,12 @@ typedef enum {
 #define DMA_RD(virt_addr, field)  ioread32(virt_addr + offsetof(dma_registers_t, field))
 #define DMA_WR(virt_addr, field, value)  iowrite32(value, virt_addr + offsetof(dma_registers_t, field))
 
-volatile void __iomem *regs_vaddr = NULL;
-struct resource *regs_res = NULL;
-dma_info_t* user_info = NULL;
 
+volatile void __iomem *regs_vaddr = NULL;   /* mapped virtual address of the axi dma base address */
+struct resource *regs_res = NULL;           /* requested resource from the axi dma registers */
+dma_info_t* user_info = NULL;               /* user info on axi dma */
+
+/* print status registers for both channels to dmesg */
 void dma_status_info(void) 
 {
     unsigned int status = DMA_RD(regs_vaddr, MM2S_DMASR);
@@ -159,10 +172,13 @@ void dma_status_info(void)
     if (status & 0x00004000) pr_info(" Err_Irq");
 }
 
+/* axi dma control registers */
 void reset_DMA(void)
 {
+    u32 val;
+
     if(!regs_vaddr) return;
-    u32 val = 0;
+    val = 0;
     SET_BIT(val, DMA_CR_RESET);
     DMA_WR(regs_vaddr, MM2S_DMACR, val);
     DMA_WR(regs_vaddr, S2MM_DMACR, val);
@@ -177,9 +193,11 @@ void halt_DMA(void)
 
 void start_transfer(void)
 {   
+    u32 value;
+
     if(!regs_vaddr) return;
     // start with IOC and ERR interrupts enabled
-    u32 value = 0;
+    value = 0;
     SET_BIT(value, DMA_CR_RUN_STOP);
     SET_BIT(value, DMA_CR_IOC_IRQ_EN);
     SET_BIT(value, DMA_CR_ERR_IRQ_EN);
@@ -208,6 +226,7 @@ void wait_transfer(void)
             ( GET_BIT(DMA_RD(regs_vaddr, S2MM_DMASR), DMA_SR_IOC_IRQ) != 1 )){}
 }
 
+/* free resource and memory mapped io */
 void cleanup(void)
 {
     if(regs_res)
@@ -223,13 +242,14 @@ void cleanup(void)
     }
 }
 
+/* request resource and map to virtual address */
 int request_and_map(u64 base_addr)
 {
     cleanup();
     regs_res = request_mem_region( base_addr, sizeof(dma_registers_t), KBUILD_MODNAME);
     if(!regs_res)
     {
-        pr_err("request mem region failed for 0x%lx", base_addr);
+        pr_err("request mem region failed for 0x%llx", base_addr);
         return 0;
     }
 
@@ -242,6 +262,7 @@ int request_and_map(u64 base_addr)
     }
     return 1;
 }
+
 /* device driver */
 static int major;
 
@@ -278,8 +299,6 @@ static ssize_t dev_write(struct file *filep, const char *buffer,
                          size_t len, loff_t *offset) 
 {
     pr_info("device written\n");
-
-
     return len;
 }
 
@@ -297,14 +316,28 @@ static int dev_release(struct inode *inodep, struct file *filep)
    return 0;
 }
 
+int __axi_dma_dev_check_region(resource_size_t start, resource_size_t n)
+{
+	struct resource * res;
+
+	res = request_mem_region(start, n, KBUILD_MODNAME" check-region");
+	if (!res)
+		return 0;
+
+	release_mem_region(res->start, resource_size(res));
+	return 1;
+}
 
 static long dev_ioctl(struct file *filep, unsigned int cmd, unsigned long arg)
 {
-    pr_info("device ioctl\n");
-    mmio_info_t user_mmio; // error if not in stack
+    mmio_info_t user_mmio; /* error if not in stack */
+    volatile void __iomem *vaddr;
+
     switch (cmd)
     {
     case AXIDMA_IOC_INFO:
+        pr_info("device ioctl : AXIDMA_IOC_INFO\n");
+        /* info about axi dma from user */
         if(copy_from_user(user_info, (uint64_t *)arg, sizeof(dma_info_t))) {
                 pr_err("Failed to copy base addr from user\n");
                 return -EFAULT;
@@ -317,14 +350,21 @@ static long dev_ioctl(struct file *filep, unsigned int cmd, unsigned long arg)
         break;
     
     case AXIDMA_IOC_MMIO_WR:
+        pr_info("device ioctl : AXIDMA_IOC_MMIO_WR\n");
+        /* opening and writing to a generic memory address */
         if(copy_from_user(&user_mmio, (uint64_t *)arg, sizeof(mmio_info_t))) {
                 pr_err("Failed to copy base addr from user\n");
                 return -EFAULT;
         }
-        volatile void __iomem * vaddr = ioremap_nocache(user_mmio.base_addr, sizeof(mmio_info_t));
+
+        /* checking if phys address is valid */
+        if(!__axi_dma_dev_check_region(user_mmio.base_addr, sizeof(u32))) return -EINVAL;
+
+
+        vaddr = ioremap_nocache(user_mmio.base_addr, sizeof(u32));
         if(!vaddr)
         {
-            pr_err("failed ioremap address 0x%lx", user_mmio.base_addr);
+            pr_err("failed ioremap address 0x%llx", user_mmio.base_addr);
             return -EINVAL;
         }
         iowrite32(user_mmio.value, vaddr+user_mmio.offset);
@@ -332,9 +372,13 @@ static long dev_ioctl(struct file *filep, unsigned int cmd, unsigned long arg)
         break;
     
     case AXIDMA_IOC_MMIO_RD:
+        /* NOT IMPLEMENTED */
+        pr_warn("device ioctl : AXIDMA_IOC_MMIO_RD not implemented\n");
         break;
     
     case AXIDMA_IOC_START:
+        /* start transfer */
+        pr_info("device ioctl : AXIDMA_IOC_START\n");
         if(! (regs_res && regs_vaddr))
         {
             pr_err("resource not map");
@@ -357,7 +401,6 @@ static long dev_ioctl(struct file *filep, unsigned int cmd, unsigned long arg)
     default:
         break;
     }
-
 
     return 1;
 }

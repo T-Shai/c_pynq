@@ -10,4 +10,7 @@ bin/main.o: main.c
 bin/pynq_utils.o: ../../common/pynq_utils.h ../../common/pynq_utils.c
 	gcc -g -c ../../common/pynq_utils.c -o $@
 
+clean:
+	rm -r bin
+
 $(info $(shell mkdir -p bin))

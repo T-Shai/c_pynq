@@ -32,8 +32,8 @@ typedef struct
 
 #define AXIDMA_IOC_MAGIC 'a'
 
-#define AXIDMA_IOC_INFO             _IO(AXIDMA_IOC_MAGIC, 1)
-#define AXIDMA_IOC_MMIO_WR          _IO(AXIDMA_IOC_MAGIC, 2)
-#define AXIDMA_IOC_MMIO_RD          _IO(AXIDMA_IOC_MAGIC, 3)
-#define AXIDMA_IOC_START            _IO(AXIDMA_IOC_MAGIC, 4)
+#define AXIDMA_IOC_INFO             _IO(AXIDMA_IOC_MAGIC, 1)    /* info from user to device driver */
+#define AXIDMA_IOC_MMIO_WR          _IO(AXIDMA_IOC_MAGIC, 2)    /* write to phys address from user */
+#define AXIDMA_IOC_MMIO_RD          _IO(AXIDMA_IOC_MAGIC, 3)    /* NOT IMPLEMENTED */
+#define AXIDMA_IOC_START            _IO(AXIDMA_IOC_MAGIC, 4)    /* start transfert */
 
