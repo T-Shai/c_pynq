@@ -1,16 +1,16 @@
-all : main
+.PHONY: all clean
 
-CC = gcc
-CFLAGS = -Wall 
+all: bin/main.o bin/pynq_utils.o
+	gcc -o bin/main $^ -lpthread -lcma
+	bin/main
 
-main : main.o loader.o
-	$(CC) $(CFLAGS) -o main main.o loader.o
+bin/main.o: main.c
+	gcc -c $^ -o $@  -I../common
 
-main.o : main.c
-	$(CC) $(CFLAGS) -c main.c
+bin/pynq_utils.o: ../common/pynq_utils.h ../common/pynq_utils.c
+	gcc -g -c ../common/pynq_utils.c -o $@
 
-loader.o : loader.c
-	$(CC) $(CFLAGS) -c loader.c
+clean:
+	rm -r bin
 
-clean :
-	rm -f main main.o loader.o
+$(info $(shell mkdir -p bin))
