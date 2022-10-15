@@ -186,7 +186,7 @@ void print_header(bitstream_header_t* header);
 void free_header(bitstream_header_t* header);
 
 int c_load_bitstream(const char * bitsteam_name, int partial, bitstream_header_t** header);
-
+int copy_bitstream(const char *bit_filename, const char* bin_filename, bitstream_header_t* header);
 uint64_t get_dma_base(const char *hwh_filename);
 
 uint64_t get_axi_ctrl_base(const char *hwh_filename);

@@ -255,128 +255,65 @@ void free_header(bitstream_header_t* header)
     free(header);
 }
 
-int copy_bitstream(const char *bit_filename, const char* bin_filename, bitstream_header_t* header)
-{ 
-    FILE* bit_fd = fopen(bit_filename, "rb");
-    if(!bit_fd)
-    {
-        printf("Error: could not open bitstream file %s\n", bit_filename);
-        return -1;
-    }
-    FILE* bin_fd = fopen(bin_filename, "wb");
-    if(!bin_fd)
-    {
-        printf("Error: could not open binary file %s\n", bin_filename);
-        return -1;
-    }
+char* get_file_content(const char* filename, size_t* pbufsize)
+{
+    char* source= NULL;
+    FILE *fp = fopen(filename, "rb");
+    if (fp != NULL) {
+        /* Go to the end of the file. */
+        if (fseek(fp, 0L, SEEK_END) == 0) {
+            /* Get the size of the file. */
+            size_t bufsize = ftell(fp);
+            if (bufsize == -1) { /* Error */ }
+            *pbufsize = bufsize; 
+            /* Allocate our buffer to that size. */
+            source = malloc(sizeof(char) * (bufsize));
 
-    // copy bitstream data
-    char c;
-    while (1)
-    {
-        c = fgetc(bit_fd);
-        if (c == 'e')
-        {
-            break;
-        }
-    }
-    
-    printf("start copying bitstream ... \n");
-    char* buffer[1024*5];
-    uint32_t bytes_read = 0;
-    while(bytes_read < header->bitstream_length)
-    {
-        uint32_t bytes_to_read = header->bitstream_length - bytes_read;
-        if(bytes_to_read > sizeof(buffer))
-        {
-            bytes_to_read = sizeof(buffer);
-        }
-        uint32_t bytes_read_this_time = fread(buffer, sizeof(char), bytes_to_read, bit_fd);
-        if(bytes_read_this_time != bytes_to_read)
-        {
-            printf("Error: could not read %u bytes from bitstream file %s\n", bytes_to_read, bit_filename);
-            printf("error code: %d\n", ferror(bit_fd));
-            printf("perror %s", strerror(errno));
-            return -1;
-        }
-        bytes_read += bytes_read_this_time;
-        fwrite(buffer, sizeof(char), bytes_read_this_time, bin_fd);
-    }
+            /* Go back to the start of the file. */
+            if (fseek(fp, 0L, SEEK_SET) != 0) { /* Error */ }
 
-
-    return 0;
+            /* Read the entire file into memory. */
+            size_t newLen = fread(source, sizeof(char), bufsize, fp);
+            if ( ferror( fp ) != 0 ) {
+                fputs("Error reading file", stderr);
+            }
+        }
+        fclose(fp);
+    }
+    return source;
 }
 
+int copy_bitstream(const char *bit_filename, const char* bin_filename, bitstream_header_t* header)
+{
+    size_t bit_content_l;
+    char *bit_content = get_file_content(bit_filename, &bit_content_l);
+    
+    size_t bin_content_l = header->bitstream_length;
+    char *bin_content = malloc(sizeof(char) * bin_content_l);
+
+    const size_t header_size = bit_content_l - bin_content_l;
+    size_t offset = 0;
+
+    while (offset < bin_content_l)
+    {
+        uint32_t data32;
+        memcpy(&data32, &bit_content[header_size + offset], sizeof(uint32_t));
+        data32 = ntohl(data32);
+        memcpy(&bin_content[offset], &data32, sizeof(uint32_t));
+        offset += 4;
+    }
+
+    FILE *bin_fp = fopen(bin_filename, "wb");
+    fwrite(bin_content, sizeof(char), bin_content_l, bin_fp);
+    fclose(bin_fp);
+
+    free(bin_content);
+    free(bit_content);
+}
 
 /*
 
     https://xilinx-wiki.atlassian.net/wiki/spaces/A/pages/18841847/Solution+ZynqMP+PL+Programming
-
-    Exercising FPGA programming using fpga framework attributes  
-FPGA programming using sysfs attributes 
- Linux FPGA Manager driver creates /sys/class/fpga_manager/<fpga> folder, which contains file attributes that provides control and state. 
-
-firmware:  /sys/class/fpga_manager/<fpga>/firmware
-firmware attribute requests an fpga image using the firmware class, then write output to the FPGA
-flags:  /sys/class/fpga_manager/<fpga>/flags
-flags attribute determines the type of Bitstream 
-0 - Full Bitstream 1 - Partial Bitstream (default: 0)
-state:  /sys/class/fpga_manager/<fpga>/state
-state attribute is a superset of FPGA states and FPGA Manager driver states
-name:  /sys/class/fpga_manager/<fpga>/name
-name attribute is name of the low level FPGA Manager driver 
-key: /sys/class/fpga_manager/<fpga>/key 
-key attribute stores the key value useful for Encrypted Bitstream loading to read the userkey
- 
-Steps for programming the Full Bitstream 
-Set flags for Full Bitstream
-
-echo 0 > /sys/class/fpga_manager/fpga0/flags
-Load the Bitstream 
-
-mkdir -p /lib/firmware
-
-cp /media/design_1_wrapper.bit.bin /lib/firmware/
-
-echo design_1_wrapper.bit.bin > /sys/class/fpga_manager/fpga0/firmware
-
-Steps for programming the Partial Bitstream
-Set flags for Partial Bitstream
-
-echo 1 > /sys/class/fpga_manager/fpga0/flags
-Load the Bitstream Partial Bitstream
-
-mkdir -p /lib/firmware
-
-cp /media/partail_wrapper.bit.bin /lib/firmware/
-
-echo partail_wrapper.bit.bin  > /sys/class/fpga_manager/fpga0/firmware
-
-FPGA Readback using debugfs attributes
-Linux FPGA Manager driver creates /sys/kernel/debug/fpga/ folder, which contains image attributes that provides readback contents.
-
-readback_type:  /sys/module/zynqmp_fpga/parameters/readback_type
-readback_type is a module parameter which tells the readback type (default : 0) 
- 0 – Configuration Register read 1 - Configuration Data read 
-image:  /sys/kernel/debug/fpga/<fpga>/image
-image is a debugfs attribute which provides the readback information based on the readback_type module param
-Steps for Readback of Configuration Registers
-Set flags for readback type
-
-echo 0 > /sys/module/zynqmp_fpga/parameters/readback_type
-
-Perform Readback operation by reading the image debug attribute 
-
-cat /sys/kernel/debug/fpga/fpga0/image
-
-teps for Readback of Configuration DataFrames 
-Set flags for readback type
-
-echo 1 > /sys/module/zynqmp_fpga/parameters/readback_type
-
-Perform Readback operation by reading the image debug attribute 
-
-cat /sys/kernel/debug/fpga/fpga0/image
 
 */
 
@@ -433,16 +370,8 @@ int c_load_bitstream(const char * bitsteam_name, int partial, bitstream_header_t
     strcpy(bin_path, lib_firmware);
     strcat(bin_path, "/");
     strcat(bin_path, bin_name);
-    if(access(bin_path, F_OK) != 0) {
-        printf("Failed to find %s\n", bin_path);
-        printf("need to create .bin and move it to %s\n", lib_firmware);
-        printf("right now you can launch the python Overlay to do this the first time\n");
-        // copy_bitstream(bitsteam_name, "test.bin", header);
-        free_header(*header);
-        free(bin_name);
-        free(bin_path);
-        return 0;
-    }
+    
+    copy_bitstream(bitsteam_name, bin_name, header);
 
     // write bin filename to the firmware attribute
     FILE* fp_firmware = fopen(fpga_firmware, "w");
@@ -492,6 +421,8 @@ uint64_t get_dma_base(const char *hwh_filename)
         }
     }
     fclose(fp);
+    if(in_dma) printf("found %s cell in %s but couldn't find base address\n", dma_name, hwh_filename);
+    else printf("couldn't found %s cell in %s\n", dma_name, hwh_filename);
     return -1;
 }
 
